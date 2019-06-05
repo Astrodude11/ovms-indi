@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OVMS</title>
+
+    <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />
+    <link rel="stylesheet" href="/jquery/jquery-ui.min.css">
+    <script src="/jquery/jquery.js"></script>
+    <script src="/jquery/jquery-ui.min.js"></script>
+    <script language="JavaScript" type="text/javascript" src="/js/utility.js"></script>
+    <script language="JavaScript" type="text/javascript" src="/js/indi.js"></script>
+    <link type="text/css" href="/css/lbti.css" rel="stylesheet" />
+
+    <!-- this script does not use INDI
+    	<script language="JavaScript" type="text/javascript" src="/indi.js"></script>
+    -->
+
+    <script>
+
+	// state variables, init to match selected selection options
+	var cname = "OVMS-SX-M2-3";
+	var cnumber = 1;
+	var hz = 200;
+
+	$(function() {
+
+	    var canvas = document.getElementById('MainCanvas'); // $("MainCanvas");
+	    var ctx = canvas.getContext("2d");
+
+	    setInterval (function() {
+		var no_cache = parseInt(Math.floor(Math.random()*1e6));
+		var img = new Image();
+		img.src = "ovms.pl?x=" + no_cache
+			+ "&cnumber=" + cnumber
+			+ "&cname=" + cname
+			+ "&hz=" + hz;
+		img.onload = function() {
+		    ctx.drawImage (img, 0, 0);
+		};
+	    }, 1000);
+
+	});
+
+	function onChannelSelection() {
+	    var selectedValue = document.getElementById('channel_selection').value;
+	    cname = (selectedValue.split(" "))[0];
+	    cnumber = (selectedValue.split(" "))[1];
+	}
+
+	function onHzSelection() {
+	    hz = document.getElementById('hz_selection').value;
+	}
+
+    </script>
+
+</head>
+
+<body onunload="">
+
+    <div id="commonHeader"></div>
+    <script>
+	$("#commonHeader").load("/commonHeader.html");
+    </script>
+
+    <center>
+
+    <div id='OVMS' class="ui-widget">
+
+	<table width='1100px'>
+
+	<tr>
+	    <td align='center' colspan='3'>
+		<h2>
+		    Optical Path Difference and Vibration Monitoring System
+		</h2>
+	    </td>
+	</tr>
+
+	<tr>
+	    <td width='200px'>
+	    </td>
+	    <td align='center' width='700px'>
+		<canvas width='640' height='480' id="MainCanvas"></canvas>
+	    </td>
+	    <td width='200px'>
+	    </td>
+	</tr>
+
+	<tr>
+	    <td>
+		Channel:
+		<select id="channel_selection" onchange="onChannelSelection();">
+		    <option selected >OVMS-SX-M2-3  1</option>
+		    <option>OVMS-SX-M2-1  2</option>
+		    <option>OVMS-SX-M2-5  3</option>
+		    <option>OVMS-SX-M2-2  4</option>
+		    <option>OVMS-SX-M2-4  5</option>
+		    <option>OVMS-SX-M3-4  6</option>
+		    <option>OVMS-SX-M3-2  7</option>
+		    <option>OVMS-SX-M3-1  8</option>
+		    <option>OVMS-SX-M3-5  9</option>
+		    <option>OVMS-SX-M3-3 10</option>
+		    <option>OVMS-SX-M1-1 11</option>
+		    <option>OVMS-SX-M1-2 12</option>
+		    <option>OVMS-SX-M1-3 13</option>
+		    <option>OVMS-SX-M1-4 14</option>
+		    <option>OVMS-SX-M1-5 15</option>
+		    <option>OVMS-LBTI-1  16</option>
+		    <option>OVMS-LBTI-2  17</option>
+		    <option>OVMS-LBTI-3  18</option>
+		    <option>OVMS-LBTI-4  19</option>
+		    <option>OVMS-LBTI-5  20</option>
+		    <option>OVMS-LBTI-6  21</option>
+		    <option>OVMS-LN-1    22</option>
+		    <option>OVMS-LN-2    23</option>
+		    <option>OVMS-LN-3    24</option>
+		    <option>OVMS-LN-4    25</option>
+		    <option>OVMS-LN-5    26</option>
+		    <option>OVMS-LN-6    27</option>
+		    <option>OVMS-DX-M2-3 28</option>
+		    <option>OVMS-DX-M2-1 29</option>
+		    <option>OVMS-DX-M2-2 30</option>
+		    <option>OVMS-DX-M2-5 31</option>
+		    <option>OVMS-DX-M2-4 32</option>
+		    <option>OVMS-DX-M3-4 33</option>
+		    <option>OVMS-DX-M3-5 34</option>
+		    <option>OVMS-DX-M3-1 35</option>
+		    <option>OVMS-DX-M3-2 36</option>
+		    <option>OVMS-DX-M3-3 37</option>
+		    <option>OVMS-DX-M1-1 38</option>
+		    <option>OVMS-DX-M1-2 39</option>
+		    <option>OVMS-DX-M1-3 40</option>
+		    <option>OVMS-DX-M1-4 41</option>
+		    <option>OVMS-DX-M1-5 42</option>
+		    <option>OVMS-Rover-1 43</option>
+		    <option>OVMS-Rover-2 44</option>
+		    <option>OVMS-SX-TIP  45</option>
+		    <option>OVMS-SX-TILT 46</option>
+		    <option>OVMS-DX-TIP  47</option>
+		    <option>OVMS-DX-TILT 48</option>
+		    <option>OVMS-OPD     49</option>
+		</select>
+	    </td>
+
+	    <td>
+	    </td>
+
+	    <td>
+		Max Hz:
+		<select id="hz_selection" onchange="onHzSelection();">
+		    <option>20</option>
+		    <option>50</option>
+		    <option>100</option>
+		    <option selected >200</option>
+		    <option>500</option>
+		</select>
+	    </td>
+	</tr>
+
+	</table>
+    </div>
+
+
+</body>
+</html>

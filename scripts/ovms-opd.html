@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OVMS</title>
+
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+
+    <link rel='stylesheet' href='/jquery/jquery-ui.min.css'>
+    <script src='/jquery/jquery.js'></script>
+    <script src='/jquery/jquery-ui.min.js'></script>
+
+    <script language='JavaScript' type='text/javascript' src='/js/utility.js'></script>
+    <script language='JavaScript' type='text/javascript' src='/js/indi.js'></script>
+    <script language='JavaScript' type='text/javascript' src='/js/pako.js'></script>
+    <script language="JavaScript" type="text/javascript" src="/js/minifft.js"></script>
+
+    <style>
+	.ui-widget {
+            font-size:10pt
+	}
+    </style>
+
+    <script>
+
+	var max_plot_duration = 30;			// must agree with largest checkbox
+	var plot_period = 100;				// update plots every this many ms
+	var rms_period = 1;				// time for RMS stats, seconds
+	var pp_period = 10;				// time for Peak-Peak stats, seconds
+
+	// objects to collect, manage and plot each type of data
+	var opd_obj = {}, sxtilt_obj = {}, sxtip_obj = {}, dxtilt_obj = {}, dxtip_obj = {};
+
+	// one-time setup after page loads
+	$(function() {
+
+	    // connect INDI callbacks
+	    setPropertyCallback ('OVMS.OPD', function (map) { ovmsCB (map, opd_obj); });
+	    setPropertyCallback ('OVMS.SXTilt', function (map) { ovmsCB (map, sxtilt_obj); });
+	    setPropertyCallback ('OVMS.SXTip', function (map) { ovmsCB (map, sxtip_obj); });
+	    setPropertyCallback ('OVMS.DXTilt', function (map) { ovmsCB (map, dxtilt_obj); });
+	    setPropertyCallback ('OVMS.DXTip', function (map) { ovmsCB (map, dxtip_obj); });
+
+
+	    // init each type of plot object and connect with its GUI components
+	    initPlotObj (opd_obj, 'opd', 'OPD', '\u00B5m');
+	    initPlotObj (sxtilt_obj, 'sxtilt', 'SX Tilt', 'asecs');
+	    initPlotObj (sxtip_obj, 'sxtip', 'SX Tip', 'asecs');
+	    initPlotObj (dxtilt_obj, 'dxtilt', 'DX Tilt', 'asecs');
+	    initPlotObj (dxtip_obj, 'dxtip', 'DX Tip', 'asecs');
+
+	    function initPlotObj (plotobj, name, title, units) {
+		plotobj.title    = title;				// good for titles
+		plotobj.units    = units;				// y units
+		plotobj.vid      = gebi(name + '-ts-canvas');		// time series canvas
+		plotobj.pid      = gebi(name + '-ps-canvas');		// power spectrum canvas
+		plotobj.ts_lock  = $('#' + name + '-ts-lock');		// ts lock y button
+		plotobj.ps_lock  = $('#' + name + '-ps-lock');		// ps lock y button
+		plotobj.ps_cum   = $('#' + name + '-ps-cum');		// ps cummulative button
+		plotobj.ps_log   = $('#' + name + '-ps-log');		// ps log scale button
+		plotobj.ts       = $('[name=' + name + '-ts]');		// ts x axis radio buttons
+		plotobj.ref_cb   = $('#' + name + '-ref-cb');		// ps set reference button
+		plotobj.hist     = new Map();		// opd values, UNIX index, back to max_plot_duration
+		plotobj.t0       = 0;			// UNIX time of most recent entry
+		plotobj.ts_yt    = [];			// persistent array of Y ts tickmarks
+		plotobj.ts_nyt   = 0;			// persistent number of Y ts tickmarks
+		plotobj.ts_first = true;		// first time through ts plot
+		plotobj.ps_yt    = [];			// persistent array of Y ps tickmarks
+		plotobj.ps_nyt   = 0;			// persistent number of Y ps tickmarks
+		plotobj.ps_first = true;		// first time through ps plot
+		plotobj.ref_on   = false;		// whether reference ps is on
+		plotobj.ref_ps   = undefined; 		// saved reference ps
+		plotobj.rms      = new Map();		// rms, UNIX index, back to max_plot_duration
+	    };
+
+	    // plot everything and repeat
+	    var ps_cut = 0;
+	    var plotall = function() {
+
+		// always update ts
+		plotTimeSeries (opd_obj);
+		plotTimeSeries (sxtilt_obj);
+		plotTimeSeries (sxtip_obj);
+		plotTimeSeries (dxtilt_obj);
+		plotTimeSeries (dxtip_obj);
+
+		// update ps less often, otherwise they look too jerky
+		if (++ps_cut == 5) {
+		    plotTimeSeriesPS (opd_obj);
+		    plotTimeSeriesPS (sxtilt_obj);
+		    plotTimeSeriesPS (sxtip_obj);
+		    plotTimeSeriesPS (dxtilt_obj);
+		    plotTimeSeriesPS (dxtip_obj);
+		    ps_cut = 0;
+		}
+
+		// repeat
+		setTimeout (plotall, plot_period);
+	    }
+
+
+	    // start infinite plotting loop
+	    plotall();
+
+	});
+
+	/* callback for the BLOBs with OVMS time history info. BLOB is array of float, first is
+	 * interval in secs, remaining are subsequent values, first is oldest, last is at timestamp.
+	 * just add to the proper time history map, the display happens from a separate timer.
+	 */
+	function ovmsCB (map, plotobj) {
+	    var elname = 'table';
+	    var format = map[elname+'.format'];
+	    if (format == '.1d_table') {
+		var v = str2f32a (map[elname]);				// unpack new values
+		var dt = v[0];						// seconds between each value
+		// console.log (map.name+' n = ' + v.length + ' dt = ' + dt + ' secs => ' + (0.5/dt) + ' Hz');
+		var t0 = iso8601(map.timestamp)*1e-3;		// time of newtest value, UNIX secs
+		if (isFinite(t0) && t0 > 0) {				// basic validation
+		    plotobj.t0 = t0;					// record for plotting
+		    for (var i = 1; i < v.length; i++)			// insert in order of increasing time
+			if (isFinite(v[i]))				// just paranoid
+			    installMap (plotobj.hist, t0 - dt*(v.length-1-i), v[i]);
+		    // console.log (plotobj.title + ' ' + (t0 - dt*(v.length-1-1)) + ' ' + t0);
+		}
+	    }
+	}
+
+	// install a new key/value into the given history map
+	function installMap (val_map, key, value) {
+	    val_map.set (key, value);
+	}
+
+	// handy
+	function gebi (id) {
+	    return document.getElementById(id);
+	}
+
+	// string to array buffer
+	function str2ab (str) {
+	    var buf = new ArrayBuffer(str.length);
+	    var u8View = new Uint8Array(buf);
+	    for (var i = 0; i < str.length; i++)
+		u8View[i] = str.charCodeAt(i);
+	    return buf;
+	}
+
+	// string to Float32Array
+	function str2f32a (str) {
+	    return new Float32Array (str2ab (str));
+	}
+
+
+	// plot time series for the given object
+	function plotTimeSeries (plotobj) {
+	    // canvas
+	    var plot_cvs = plotobj.vid;
+
+	    // get currently selected plot duration
+	    var plot_duration = plotobj.ts.filter(':checked').val();
+	    // console.log (plotobj.vid + ': ' + 'plot_duration = ' + plot_duration);
+
+	    // find stats of val_map values, discarding values too old to plot along the way
+	    var val_map = plotobj.hist;
+	    var min_map = 1e100, max_map = -1e100;
+	    var sum2 = 0, nrms = 0;
+	    var oldest_plot = plotobj.t0 - plot_duration;	// oldest time to plot
+	    var max_plot = plotobj.t0 - max_plot_duration;	// oldest time to keep
+	    var rms_end = plotobj.t0 - rms_period;		// oldest time to use for rms
+	    var pp_end = plotobj.t0 - pp_period;		// oldest time to use for pp
+	    var pp_min = 1e100, pp_max = -1e100;		// P-P range
+	    var npoints = 0;					// n point for plotting
+	    for (var [key, value] of val_map) {
+		if (key < max_plot) {
+		    val_map.delete(key);
+		} else if (key >= oldest_plot) {
+		    if (value < min_map) min_map = value;
+		    if (value > max_map) max_map = value;
+		    npoints++;
+		    if (key >= rms_end) {
+			sum2 += value*value; 
+			nrms++;
+		    }
+		    if (key >= pp_end) {
+			if (value < pp_min) pp_min = value;
+			if (value > pp_max) pp_max = value;
+		    }
+		}
+	    }
+
+	    // add rms to history and find it's range, clean out old ones along the way
+	    var rms = Math.sqrt(sum2/nrms);			// assumes mean = 0
+	    plotobj.rms.set(Date.now()*1e-3, rms);
+	    var min_rms = 1e100, max_rms = -1e100;
+	    var nrms = 0;
+	    for (var [key, value] of plotobj.rms) {
+		if (key < max_plot) {
+		    plotobj.rms.delete(key);
+		} else if (key >= oldest_plot) {
+		    if (value < min_rms) min_rms = value;
+		    if (value > max_rms) max_rms = value;
+		    nrms++;
+		}
+	    }
+	    var newest_rms = key;				// plot t=0 here
+
+	    // if nothing left, still show basic y axis
+	    if (npoints == 0) {
+		min_map = -1;
+		max_map = 1;
+	    }
+	    // console.log(plotobj.vid + ': ' + npoints + ' map range is now: ' + min_map + ' .. ' + max_map);
+
+	    // show fewer tickmarks when spanning longer periods
+	    var t_factor = (plot_duration > 60) ? 60 : 1;
+
+	    // find nice x tick marks
+	    var nxt, xticks = [];
+	    nxt = tickmarks (0, plot_duration/t_factor, 5, xticks);
+	    // console.log (plotobj.vid + ': ' + nxt + ' xticks from ' + xticks[0] + ' .. ' + xticks[nxt-1]);
+
+	    // find nice y ticks if first time or scale is not locked
+	    // console.log (plotobj.vid + ' : lock ' + plotobj.ts_lock.prop('checked'));
+	    if (plotobj.ts_first || !plotobj.ts_lock.prop('checked')) {
+		plotobj.ts_nyt = tickmarks (min_map, max_map, 5, plotobj.ts_yt);
+		plotobj.ts_first = false;
+	    }
+	    // console.log (plotobj.vid + ': ' + plotobj.ts_nyt + ' yticks from ' + plotobj.ts_yt[0] + ' .. ' + plotobj.ts_yt[plotobj.ts_nyt-1]);
+
+	    // find rms ticks, 0 will be centered vertically; these don't have locking
+	    var rms_t = [];
+	    var rms_nt = tickmarks (0, max_rms, 5, rms_t);
+
+	    // render to off-screen canvas then blit to plot_cvs to avoid flashing; allow for resize
+	    var cvs = document.createElement ('canvas');
+	    if (plotobj.dw)
+		plot_cvs.width = plotobj.dw - 40;
+	    if (plotobj.dh)
+		plot_cvs.height = plotobj.dh/2 - 40;
+	    var w = cvs.width = plot_cvs.width;
+	    var h = cvs.height = plot_cvs.height;
+	    var ctx = cvs.getContext('2d');
+
+	    // set some visual info
+	    ctx.font = 'bold 9pt Helvetica';
+	    var axis_color = '#000';
+	    var grid_color = '#bbb';
+	    var bg_color = '#f0f0f0';
+	    var data_color = 'red';
+	    var rms_color = '#44c';
+	    var lm = 70;		// left margin
+	    var rm = 70;		// right margin
+	    var tm = 20;		// top margin
+	    var bm = 30;		// bottom margin
+	    var tl = 5;			// tickmark length
+	    var pw = w - lm - rm;	// net plotting width
+	    var ph = h - tm - bm;	// net plotting height
+
+	    // cleaner looking lines if center on pixels
+	    ctx.setTransform (1, 0, 0, 1, 0, 0);
+	    ctx.translate (0.5, 0.5);
+
+	    // handy function to create a simple %g format
+	    function simpleG (val) {
+		if (val != 0 && (Math.abs(val) < .01 || Math.abs(val) > 100))
+		    return sprintf ("%.2e", val);
+		else
+		    return sprintf ("%.2f", val);
+	    }
+
+	    // handy function to draw a line on ctx
+	    function drawLine (x0, y0, x1, y1) {
+		ctx.beginPath();
+		    ctx.moveTo (x0, y0);
+		    ctx.lineTo (x1, y1);
+		ctx.stroke();
+	    }
+
+	    // handy function to convert positive seconds ago to canvas x coordinate
+	    function s2cx (s) {
+		return (w - rm - pw*(s/t_factor-xticks[0])
+			/ (xticks[nxt-1] - xticks[0]));
+	    }
+
+	    // handy function to convert world y to canvas y coordinate
+	    function wy2cy (y) {
+		return (h - bm - ph*(y - plotobj.ts_yt[0])
+			/ (plotobj.ts_yt[plotobj.ts_nyt-1] - plotobj.ts_yt[0]));
+	    }
+
+	    // handy function to convery RMS to y coords, upper half only
+	    function rms2cy (y) {
+		return (h - bm - ph/2 - ph/2*(y - rms_t[0]) / (rms_t[rms_nt-1] - rms_t[0]));
+	    }
+
+	    // clear
+	    ctx.fillStyle = bg_color;
+	    ctx.fillRect (0, 0, w, h);
+
+	    // title
+	    var title = plotobj.title + ' Time Series, ' + plotobj.units;
+	    ctx.fillStyle = axis_color;
+	    ctx.fillText (title, (w - ctx.measureText(title).width)/2, 12);
+	    ctx.fillStyle = rms_color;
+	    var pp = (pp_max - pp_min).toFixed(2);
+	    ctx.fillText (pp_period + '-sec P-P ' + pp, w - rm - 130, 12);
+
+	    // draw and label X (seconds ago) axis
+	    ctx.strokeStyle = axis_color;
+	    ctx.fillStyle = axis_color;
+	    ctx.lineWidth = 1;
+	    drawLine (lm, h-bm, w-rm, h-bm);
+	    for (var i = 0; i < nxt; i++) {
+		var x = s2cx(xticks[i]*t_factor);
+		var y = h - bm;
+		ctx.fillText (-xticks[i], x-10, h - 8);
+		drawLine (x, y, x, y+tl);
+	    }
+
+	    // draw and label Y axis
+	    drawLine (lm, h-bm, lm, tm);
+	    for (var i = 0; i < plotobj.ts_nyt; i++) {
+		var x = lm;
+		var y = wy2cy (plotobj.ts_yt[i]);
+		var l = simpleG(plotobj.ts_yt[i]);
+		ctx.fillText (l, lm - tl - 8 - ctx.measureText(l).width, y+5);
+		drawLine (x, y, x-tl, y);
+	    }
+
+	    // draw and label y-right axis for RMS
+	    drawLine (w-rm, h-bm, w-rm, tm);
+	    ctx.strokeStyle = rms_color;
+	    ctx.fillStyle = rms_color;
+	    for (var i = 0; i < rms_nt; i++) {
+		var x = w-rm;
+		var y = rms2cy (rms_t[i]);
+		var l = simpleG(rms_t[i]);
+		ctx.fillText (l, x+tl+4, y+5);
+		drawLine (x, y, x+tl, y);
+	    }
+	    ctx.fillText (rms_period + ' s', w-23, h - bm - ph/2 - 60);
+	    ctx.fillText ('R', w-20, h - bm - ph/2 - 45);
+	    ctx.fillText ('M', w-20-1, h - bm - ph/2 - 30);
+	    ctx.fillText ('S', w-20, h - bm - ph/2 - 15);
+
+	    // draw background grid
+	    ctx.lineWidth = 1;
+	    ctx.strokeStyle = grid_color;
+	    for (var i = 0; i < nxt-1; i++) {
+		var x = s2cx(xticks[i]*t_factor);
+		drawLine (x, h-bm, x, tm);
+	    }
+	    for (var i = 1; i < plotobj.ts_nyt; i++) {
+		var y = wy2cy(plotobj.ts_yt[i]);
+		drawLine (lm, y, w-rm, y);
+	    }
+
+	    // draw each point in val_map
+	    ctx.strokeStyle = data_color;
+	    var last_x = undefined;
+	    ctx.lineWidth = 1;
+	    ctx.beginPath();
+	    for (var [key, value] of val_map) {
+		if (key > oldest_plot) {
+		    var x = s2cx(plotobj.t0 - key);
+		    var y = wy2cy(value);
+		    if (last_x == undefined) {
+			ctx.moveTo (x, y);			// start of line
+			last_x = x;
+		    } else {
+			var d = Math.abs(x-last_x);
+			if (d > 2) {
+			    ctx.moveTo (x,y);			// leave a gap
+			    last_x = x;
+			} else {
+			    ctx.lineTo (x, y);			// always connect, else loose important spikes
+			    last_x = x;
+			}
+		    }
+		}
+	    }
+	    ctx.stroke();
+
+	    // draw each point of RMS history
+	    ctx.strokeStyle = rms_color;
+	    var last_x = undefined;
+	    ctx.lineWidth = 1;
+	    ctx.beginPath();
+	    for (var [key, value] of plotobj.rms) {
+		if (key > oldest_plot) {
+		    var x = s2cx(newest_rms + rms_period/2 - key);	// right edge WRT newest rms time
+		    var y = rms2cy(value);
+		    if (x >= lm && x <= w-rm) {
+			if (last_x == undefined) {
+			    ctx.moveTo (x, y);
+			    last_x = x;
+			} else {
+			    ctx.lineTo (x, y);
+			    last_x = x;
+			}
+		    }
+		}
+	    }
+	    ctx.stroke();
+
+	    // blit to screen and discard off-screen canvas element
+	    var plot_ctx = plot_cvs.getContext ('2d');
+	    plot_ctx.drawImage (cvs, 0, 0);
+	    cvs.remove();
+
+	}
+
+
+	// plot power spectrum of the given object
+	function plotTimeSeriesPS (plotobj) {
+	    // canvas
+	    var plot_cvs = plotobj.pid;
+
+	    // set desired lower frequency limit by setting time span of samples
+	    var time_span = 2;
+
+	    // extract values for fft back to time_span
+	    var val_map = plotobj.hist;
+	    var oldest_plot = plotobj.t0 - time_span;
+	    var nfft = 0;
+	    var re = [];
+	    var newest, oldest;
+	    for (var [key, value] of val_map) {
+		if (key >= oldest_plot) {
+		    re[nfft++] = value;
+		    if (!newest || key > newest)
+			newest = key;
+		    if (!oldest || key < oldest)
+			oldest = key;
+		}
+	    }
+	    if (nfft == 0)
+		return;
+
+	    // time step is average change between samples
+	    var time_step = (newest - oldest)/nfft;
+	    // console.log(plotobj.title + ' time step = ' + time_step + ' using ' + nfft);
+
+	    // minifft requires array lengths to be power of 2
+	    nfft = Math.pow(2.0, Math.floor(Math.log(nfft)/Math.log(2.0)));
+	    // console.log ('fft size ' + nfft);
+
+	    // find actual time span
+	    time_span = time_step * nfft;
+	    // console.log('start time ' + oldest + ' time span = ' + time_span);
+	    // console.log ('oldest ' + (Date.now()*1e-3 - oldest));
+
+	    // temp array of 0's for imaginary part
+	    // http://stackoverflow.com/questions/1295584/most-efficient-way-to-create-a-zero-filled-javascript-array
+	    var im = Array.apply(null, new Array(nfft)).map(Number.prototype.valueOf,0);
+
+	    // miniFFT requires both lengths to match
+	    re.length = im.length;
+
+	    // finally the FFT -- IN PLACE
+	    miniFFT (re, im);
+
+	    // store power in ps[] (just one half) and find min/max along the way for tick marks
+	    var nps = nfft/2;
+	    var ps = new Array(nps);
+	    var miny = 1e100, maxy = -1e100;
+	    for (var i = 1; i < nps; i++) {
+		var y = ps[i] = re[i]*re[i] + im[i]*im[i];
+		if (y < miny) miny = y;
+		if (y > maxy) maxy = y;
+	    }
+	    ps[0] = 0;
+
+	    // frequency range
+	    var minf = 0.5 / time_span;
+	    var maxf = 0.5 / time_step;
+	    var lminf = Math.log10(minf);
+	    var lmaxf = Math.log10(maxf);
+
+	    // update ref_on, and grab fresh copy if just came on
+	    if (plotobj.ref_cb.prop('checked')) {
+		if (!plotobj.ref_on) {
+		    // just came on, clone ps
+		    plotobj.ref_ps = ps.slice(0);
+		    plotobj.ref_on = true;
+
+		    // also find the cumulative percentage sum in case that's to be plotted
+		    plotobj.cum_ps = new Array(nps);
+		    var cum = 0;
+		    for (var i = 0; i < nps; i++)
+			plotobj.cum_ps[i] = (cum += ps[i]);
+		    for (var i = 0; i < nps; i++)
+			plotobj.cum_ps[i] /= cum*1e-2;
+		}
+	    } else {
+		plotobj.ref_on = false;
+	    }
+
+
+	    // record user's choices
+	    var want_log = plotobj.ps_log.prop('checked');
+	    var want_cum = plotobj.ps_cum.prop('checked');
+
+	    // inhibit cum if want log
+	    if (want_log) {
+		plotobj.ps_cum.css ('visibility', 'hidden');
+		want_cum = false;
+	    } else
+		plotobj.ps_cum.css ('visibility', 'visible');
+
+
+	    // prep for various display options
+	    if (want_cum) {
+		// convert to cumulative percentage 0..100 IN PLACE
+		var cum = 0;
+		for (var i = 0; i < nps; i++)
+		    ps[i] = (cum += ps[i]);
+		for (var i = 0; i < nps; i++)
+		    ps[i] /= cum*1e-2;
+		miny = 0;
+		maxy = 100;
+	    } else if (want_log) {
+		// prepare for nice log scale
+		var lminy = Math.floor(Math.log10(miny));
+		var lmaxy = Math.ceil(Math.log10(maxy));
+		lminy = Math.min(lmaxy-2, lminy);
+	    }
+
+
+	    // find x tickmarks
+	    var xticks = [];
+	    var nxt = tickmarks (lminf, lmaxf, 4, xticks);
+	    var xtrange = xticks[nxt-1] - xticks[0];
+	    // console.log ('X: ' + minf + ' .. ' + maxf);
+	    // console.log ('  log(X): ' + lminf + ' .. ' + lmaxf);
+	    // console.log ('  X ticks: ' + nxt + ' ' + xticks[0] + ' .. ' + xticks[nxt-1]);
+
+
+	    // find nice y ticks if first time or scale is not locked
+	    // console.log (plotobj.vid + ' : lock ' + plotobj.ps_lock.prop('checked'));
+	    if (plotobj.ps_first || !plotobj.ps_lock.prop('checked')) {
+		if (want_log)
+		    plotobj.ps_nyt = tickmarks (lminy, lmaxy, 5, plotobj.ps_yt);	// log
+		else
+		    plotobj.ps_nyt = tickmarks (miny, maxy, 4, plotobj.ps_yt);		// linear
+		plotobj.ps_first = false;
+	    }
+	    var ytrange = plotobj.ps_yt[plotobj.ps_nyt-1] - plotobj.ps_yt[0];
+	    // console.log ('Y: ' + miny + ' .. ' + maxy);
+	    // console.log ('  log(Y): ' + lminy + ' .. ' + lmaxy);
+	    // console.log ('  Y ticks: ' + plotobj.ps_nyt + ' ' + plotobj.ps_yt[0] + ' .. ' + plotobj.ps_yt[plotobj.ps_nyt-1]);
+
+
+	    // handy function to create a simple %g format
+	    function simpleG (val) {
+		if (val != 0 && (Math.abs(val) < .01 || Math.abs(val) > 100))
+		    return sprintf ("%.2e", val);
+		else
+		    return sprintf ("%.2f", val);
+	    }
+
+	    // render to off-screen canvas then blit to plot_cvs to void flashing; allow for resize
+	    var cvs = document.createElement ('canvas');
+	    if (plotobj.dw)
+		plot_cvs.width = plotobj.dw - 40;
+	    if (plotobj.dh)
+		plot_cvs.height = plotobj.dh/2 - 40;
+	    var w = cvs.width = plot_cvs.width;
+	    var h = cvs.height = plot_cvs.height;
+	    var ctx = cvs.getContext('2d');
+
+
+	    // some graph parameters
+	    ctx.font = 'bold 9pt Helvetica';
+	    var axis_color = '#000';
+	    var grid_color = '#bbb';
+	    var bg_color = '#f0f0f0';
+	    var data_color = 'red';
+	    var ref_color = 'blue';
+	    var lb = 70;
+	    var rb = 30;
+	    var tb = 20;
+	    var bb = 30;
+	    var dw = w - (lb+rb);
+	    var dh = h - (tb+bb);
+	    var tl = 5;
+
+	    // cleaner looking lines if center on pixels
+	    ctx.setTransform (1, 0, 0, 1, 0, 0);
+	    ctx.translate (0.5, 0.5);
+
+	    // clear
+	    ctx.fillStyle = bg_color;
+	    ctx.fillRect (0, 0, w, h);
+
+	    // title
+	    var title = plotobj.title + ' ' + (want_cum ? "Cumulative Power Spectrum" : "Power Spectrum");
+	    ctx.fillStyle = axis_color;
+	    ctx.fillText (title, w/2-ctx.measureText(title).width/2, 12);
+
+	    // both axis lines
+	    ctx.strokeStyle = axis_color;
+	    ctx.beginPath();
+		ctx.moveTo(lb, tb);
+		ctx.lineTo(lb, tb+dh);
+		ctx.lineTo(lb+dw, tb+dh);
+	    ctx.stroke();
+
+	    // x axis
+	    ctx.strokeStyle = grid_color;
+	    ctx.beginPath();
+	    for (var i = 0; i < nxt; i++) {
+		var x = lb + dw*(xticks[i]-xticks[0])/xtrange;
+		ctx.moveTo(x, tb);
+		ctx.lineTo(x, tb+dh+tl);
+		var ten = Math.pow(10.0,xticks[i]);
+		var str = sprintf ("%.2f", ten);
+		var sm = ctx.measureText(str);
+		ctx.fillText (str, x-sm.width/2, tb+dh+tl+10);
+		if (i < nxt-1) {
+		    for (var j = 2; j < 10; j++) {
+			var tx = lb + dw*(Math.log10(j*ten)-xticks[0])/xtrange;
+			ctx.moveTo (tx, tb + dh);
+			ctx.lineTo (tx, tb + dh + tl);
+		    }
+		}
+	    }
+	    var str = sprintf("Hz");
+	    var sm = ctx.measureText(str);
+	    ctx.fillText (str, lb+dw/2-sm.width/2, tb+dh+bb-2);
+
+	    // y axis
+	    for (var i = 0; i < plotobj.ps_nyt; i++) {
+		var y = tb + dh - dh*(plotobj.ps_yt[i]-plotobj.ps_yt[0])/ytrange;
+		ctx.moveTo(lb, y);
+		ctx.lineTo(lb+dw, y);
+		var v = plotobj.ps_yt[i];
+		var s = want_log ? simpleG(Math.pow(10.0,v)) : v;
+		var sm = ctx.measureText(s);
+		ctx.fillText (s, lb-2*tl-sm.width, y);
+	    }
+	    ctx.stroke();
+
+	    // plot saved reference first, if any
+	    if (plotobj.ref_on) {
+		ctx.strokeStyle = ref_color;
+		ctx.beginPath();
+		var myps = want_cum ? plotobj.cum_ps : plotobj.ref_ps;
+		var last_x = undefined;
+		for (var i = 0; i < nps; i++) {
+		    var logf = Math.log10(minf + i*(maxf-minf)/nps);
+		    var x = lb + dw*(logf - xticks[0])/xtrange;
+		    var v = want_log ? Math.log10(myps[i]) : myps[i];
+		    var y = tb + dh - dh*(v - plotobj.ps_yt[0])/ytrange;
+		    if (last_x == undefined) {
+			ctx.moveTo (x, y);
+			last_x = x;
+		    } else if (Math.abs(x-last_x) >= 1) {
+			ctx.lineTo (x, y);		// only draw when change is visible
+			last_x = x;
+		    }
+		}
+		ctx.stroke();
+	    }
+
+	    // plot the power spectrum
+	    ctx.strokeStyle = data_color;
+	    ctx.beginPath();
+	    var last_x = undefined;
+	    for (var i = 0; i < nps; i++) {
+		var logf = Math.log10(minf + i*(maxf-minf)/nps);
+		var x = lb + dw*(logf - xticks[0])/xtrange;
+		var v = want_log ? Math.log10(ps[i]) : ps[i];
+		var y = tb + dh - dh*(v - plotobj.ps_yt[0])/ytrange;
+		if (last_x == undefined) {
+		    ctx.moveTo (x, y);
+		    last_x = x;
+		} else if (Math.abs(x-last_x) >= 1) {
+		    ctx.lineTo (x, y);
+		    last_x = x;
+		}
+	    }
+	    ctx.stroke();
+
+	    // blit to screen and discard off-screen canvas element
+	    var plot_ctx = plot_cvs.getContext ('2d');
+	    plot_ctx.drawImage (cvs, 0, 0);
+	    cvs.remove();
+	}
+
+
+    </script>
+</head>
+
+<body>
+
+    <div id='commonHeader'></div>
+    <script>
+	$('#commonHeader').load('/commonHeader.html');
+    </script>
+
+
+    <!-- plots are arranged in rows for each data type, columns are time series and power spectrum -->
+
+    <center>
+
+    <h2>
+	OVMS -- Optical Path Difference and Vibration Monitoring System
+    </h2>
+
+
+    <table cellpadding='10px'  border='1' align='center' >
+
+	<tr>
+	    <td width='620px'>
+		<table>
+		    <tr>
+			<td colspan='4' >
+			    <canvas id='opd-ts-canvas' width='600px' height='200px'> </canvas>
+			</td>
+		    </tr>
+		    <tr>
+			<td > <input type='checkbox' id='opd-ts-lock' > Lock y scale </input> </td>
+			<td > <input type='radio' name='opd-ts' value='30' > 30 secs </input> </td>
+			<td > <input type='radio' name='opd-ts' value='5' checked='checked' > 5 secs </input> </td>
+		    </tr>
+		</table>
+	    </td>
+
+	    <td width='620px'>
+		<table>
+		    <tr>
+			<td colspan='6' >
+			    <canvas id='opd-ps-canvas' width='600px' height='200px'> </canvas>
+			</td>
+		    </tr>
+		    <tr>
+			<td > <input type='checkbox' id='opd-ps-lock' > Lock y </input> </td>
+			<td > <input type='checkbox' id='opd-ps-log' > Log y </input> </td>
+			<td > <input type='checkbox' id='opd-ps-cum' > Cumulative </input> </td>
+			<td > <input type='checkbox' id='opd-ref-cb' > Reference </input> </td>
+		    </tr>
+		</table>
+	    </td>
+	</tr>
+
+	<tr>
+	    <td>
+		<table>
+		    <tr>
+			<td colspan='4' >
+			    <canvas id='sxtilt-ts-canvas' width='600px' height='200px'> </canvas>
+			</td>
+		    </tr>
+		    <tr>
+			<td > <input type='checkbox' id='sxtilt-ts-lock' > Lock y scale </input> </td>
+			<td > <input type='radio' name='sxtilt-ts' value='30' > 30 secs </input> </td>
+			<td > <input type='radio' name='sxtilt-ts' value='5' checked='checked' > 5 secs </input> </td>
+		    </tr>
+		</table>
+	    </td>
+
+	    <td>
+		<table>
+		    <tr>
+			<td colspan='6' >
+			    <canvas id='sxtilt-ps-canvas' width='600px' height='200px'> </canvas>
+			</td>
+		    </tr>
+		    <tr>
+			<td > <input type='checkbox' id='sxtilt-ps-lock' > Lock y </input> </td>
+			<td > <input type='checkbox' id='sxtilt-ps-log' > Log y </input> </td>
+			<td > <input type='checkbox' id='sxtilt-ps-cum' > Cumulative </input> </td>
+			<td > <input type='checkbox' id='sxtilt-ref-cb' > Reference </input> </td>
+		    </tr>
+		</table>
+	    </td>
+	</tr>
+
+	<tr>
+	    <td>
+		<table>
+		    <tr>
+			<td colspan='4' >
+			    <canvas id='dxtilt-ts-canvas' width='600px' height='200px'> </canvas>
+			</td>
+		    </tr>
+		    <tr>
+			<td > <input type='checkbox' id='dxtilt-ts-lock' > Lock y scale </input> </td>
+			<td > <input type='radio' name='dxtilt-ts' value='30' > 30 secs </input> </td>
+			<td > <input type='radio' name='dxtilt-ts' value='5' checked='checked' > 5 secs </input> </td>
+		    </tr>
+		</table>
+	    </td>
+
+	    <td>
+		<table>
+		    <tr>
+			<td colspan='6' >
+			    <canvas id='dxtilt-ps-canvas' width='600px' height='200px'> </canvas>
+			</td>
+		    </tr>
+		    <tr>
+			<td > <input type='checkbox' id='dxtilt-ps-lock' > Lock y </input> </td>
+			<td > <input type='checkbox' id='dxtilt-ps-log' > Log y </input> </td>
+			<td > <input type='checkbox' id='dxtilt-ps-cum' > Cumulative </input> </td>
+			<td > <input type='checkbox' id='dxtilt-ref-cb' > Reference </input> </td>
+		    </tr>
+		</table>
+	    </td>
+	</tr>
+
+	<tr>
+	    <td>
+		<table>
+		    <tr>
+			<td colspan='4' >
+			    <canvas id='sxtip-ts-canvas' width='600px' height='200px'> </canvas>
+			</td>
+		    </tr>
+
+		    <tr>
+			<td > <input type='checkbox' id='sxtip-ts-lock' > Lock y scale </input> </td>
+			<td > <input type='radio' name='sxtip-ts' value='30' > 30 secs </input> </td>
+			<td > <input type='radio' name='sxtip-ts' value='5' checked='checked' > 5 secs </input> </td>
+		    </tr>
+		</table>
+	    </td>
+
+	    <td>
+		<table>
+		    <tr>
+			<td colspan='6' >
+			    <canvas id='sxtip-ps-canvas' width='600px' height='200px'> </canvas>
+			</td>
+		    </tr>
+		    <tr>
+			<td > <input type='checkbox' id='sxtip-ps-lock' > Lock y </input> </td>
+			<td > <input type='checkbox' id='sxtip-ps-log' > Log y </input> </td>
+			<td > <input type='checkbox' id='sxtip-ps-cum' > Cumulative </input> </td>
+			<td > <input type='checkbox' id='sxtip-ref-cb' > Reference </input> </td>
+		    </tr>
+		</table>
+	    </td>
+	</tr>
+
+	<tr>
+	    <td>
+		<table>
+		    <tr>
+			<td colspan='4' >
+			    <canvas id='dxtip-ts-canvas' width='600px' height='200px'> </canvas>
+			</td>
+		    </tr>
+		    <tr>
+			<td > <input type='checkbox' id='dxtip-ts-lock' > Lock y scale </input> </td>
+			<td > <input type='radio' name='dxtip-ts' value='30' > 30 secs </input> </td>
+			<td > <input type='radio' name='dxtip-ts' value='5' checked='checked' > 5 secs </input> </td>
+		    </tr>
+		</table>
+	    </td>
+
+	    <td>
+		<table>
+		    <tr>
+			<td colspan='6' >
+			    <canvas id='dxtip-ps-canvas' width='600px' height='200px'> </canvas>
+			</td>
+		    </tr>
+		    <tr>
+			<td > <input type='checkbox' id='dxtip-ps-lock' > Lock y </input> </td>
+			<td > <input type='checkbox' id='dxtip-ps-log' > Log y </input> </td>
+			<td > <input type='checkbox' id='dxtip-ps-cum' > Cumulative </input> </td>
+			<td > <input type='checkbox' id='dxtip-ref-cb' > Reference </input> </td>
+		    </tr>
+		</table>
+	    </td>
+	</tr>
+
+    </table>
+
+
+    <!-- message area
+    <div id="commonMessages"></div>
+    <script>
+	$("#commonMessages").load("/commonMessages.html");
+    </script>
+    -->
+
+</body>
+</html>
